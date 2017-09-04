@@ -61,11 +61,13 @@ expr_data_raw <- filtered_data %>%  ungroup() %>% select(-Majority.protein.IDs)
 # log2 is conventional for differential expression studies. 
 expr_data_log2 <- log2(expr_data_raw)
 
+expr_data <- normalizeBetweenArrays(expr_data_log2)
+
 ```
 
 ```{r}
 #matrix of expression data
-matrix <- as.matrix(expr_data_log2[,0:24])
+matrix <- as.matrix(expr_data[,0:24])
 rownames(matrix) <- info_data$Majority.protein.IDs
 matrix[is.na(matrix)] <- 0
 
@@ -84,6 +86,11 @@ labels <- rownames(matrix)[indexes]
 
 Heatmap(matrix, column_title = "S. lineolata tissue types", show_row_names = FALSE, name = "LFQ values (log2)", heatmap_legend_param = list(at = c(0,15,20,25,30,35,40), labels = c(0,15,20,25,30,35,40)),show_row_dend = FALSE, col = colorRamp2(c(0,15,20,25,30,35,40), c("grey85", "aquamarine","lightskyblue", "cornflowerblue", "blue", "navy","black"))) + rowAnnotation(link = row_anno_link( at = indexes, labels = labels,labels_gp = gpar(fontsize = 10)),annotation_width = unit(5,"cm"))
 
+```
+
+
+```{r}
+#subsetting 
 ```
 
 
