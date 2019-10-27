@@ -1,0 +1,250 @@
+---
+title: "DEanalysis_quantVSN_201809"
+author: "Nikeisha Caruana"
+date: "07/09/2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Read in Libraries
+```{r}
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(limma)
+library(gplots)
+library(ComplexHeatmap)
+library(circlize)
+library(data.table)
+library(splitstackshape)
+library(ggpubr)
+```
+
+The dataset from maxquant proteingroups file is read in along with an annotated transcriptome database, which was used during the maxquant analysis. 
+```{r}
+
+mq_data <- read_tsv("input_data/proteingroups_SL_LFQ.txt",na = "0")
+anno_data <- read_tsv(file = "input_data/SL_LFQannotations.txt")
+#only important data
+anno_data <- anno_data[c(1,423,427,432,433)]
+```
+
+```{r}
+colnames(mq_data) <- make.names(colnames(mq_data))
+```
+
+```{r}
+# Select LFQ values and also a column with IDs
+lfq_data <- mq_data %>% dplyr::select(Majority.protein.IDs,contains("LFQ"))
+colnames(lfq_data)
+```
+
+Averaging technical replicates
+
+```{r}
+long_lfq_data <- lfq_data %>% gather("sample","intensity",-Majority.protein.IDs)
+
+biorep_names <- str_match(long_lfq_data$sample,"[A-Z]*_[0-9]")[,1]
+
+long_lfq_data$biorep_names <- biorep_names
+
+bioav_lfq_data <- long_lfq_data %>% 
+  group_by(Majority.protein.IDs,biorep_names) %>% 
+  summarise(intensity = mean(intensity,na.rm = TRUE))
+
+bioav_wide_lfq_data <- bioav_lfq_data %>% spread(biorep_names,intensity)
+```
+
+Construct dataframe representing the experimental design
+```{r}
+sample_data <- str_match( colnames(bioav_wide_lfq_data)[-1], pattern = "([A-Z]*)_([0-9])")[,2:3]
+colnames(sample_data) <- c("Tissue","Animal")
+sample_data <- data.frame(sample_data)
+rownames(sample_data) <- colnames(bioav_wide_lfq_data)[-1]
+```
+
+Filter for contaminants 
+```{r}
+filtered_data <- bioav_wide_lfq_data %>% filter(!grepl("CON",Majority.protein.IDs)) %>% filter(!grepl("REV",Majority.protein.IDs))
+```
+
+Visualising missingness
+```{r}
+# Convert data to presence/absence (1/0)
+pa_filtered_data <- (!apply(filtered_data[,-1],c(1,2),is.nan))*1
+rownames(pa_filtered_data) <- filtered_data$Majority.protein.IDs
+#Heatmap(pa_filtered_data,km=1,show_row_names = FALSE,show_row_dend = FALSE)
+```
+
+Separation of quantitation values
+Keeping row order
+```{r}
+info_data <- filtered_data %>% dplyr::select(Majority.protein.IDs) 
+expr_data_raw <- filtered_data %>%  ungroup() %>% dplyr::select(-Majority.protein.IDs)
+expr_data_raw[is.na(expr_data_raw)] <- NA
+
+#normalisation using VSN 
+expr_data <- normalizeVSN(expr_data_raw)
+```
+
+Quick MDS plot 
+```{r}
+mds_data <- plotMDS(expr_data, plot = FALSE)
+mds_data <- data.frame(Dimention1=mds_data$x,Dimention2=mds_data$y,sample_data[names(mds_data$x),])
+plot = ggplot(mds_data,aes(x=Dimention1,y=Dimention2)) + geom_point(aes(shape=Tissue), size=3) 
+
+plot + theme_pubr(base_size = 18, legend = c("right"))
+```
+
+Extract results and make heatmaps using just count data 
+```{r}
+
+mantledata <- expr_data_raw[,c("SLIME_1","SLIME_2","SLIME_3","SLIME_4","VMG_1","VMG_2","VMG_3","VMG_4","VMS_1","VMS_2","VMS_3","VMS_4","VMM_1","VMM_2","VMM_3","VMM_4","DMS_1","DMS_2","DMS_3","DMS_4","DMM_1","DMM_2","DMM_3","DMM_4")]
+rownames(mantledata) <- info_data$Majority.protein.IDs
+
+mantle_norm <- normalizeVSN(mantledata)
+mm <- as.matrix(mantle_norm[,0:24])
+rownames(mm) <- info_data$Majority.protein.IDs
+
+# Filter out some proteins with too many NAs these distort the plot
+num_na <- rowSums(is.na(mm))
+good_rows <- which(num_na < 22)
+
+#annotation colour legend
+df = data.frame(Type = c(rep("SLIME", 4), rep("VMG", 4), rep("VMS", 4),rep("VMM", 4),rep("DMS", 4),rep("DMM", 4)))
+ha = HeatmapAnnotation(df = df, col = list(Type = c("SLIME" =  "#00BA38", "VMG" = "#00BFC4","VMS" = "#F564E3","VMM" = "#619CFF","DMS" = "#B79F00","DMM" = "#F8766D")))
+
+dist_na <- function(m){
+  m0 <- m
+  m0[is.na(m)] <- 0
+  dist(m0)
+}
+
+mm_hm <- mm[good_rows,]
+
+#Create heatmap
+HMab <- Heatmap(mm_hm, bottom_annotation = ha, show_row_names = FALSE, show_column_names = FALSE, name = "LFQ values (log2)", heatmap_legend_param = list(at = c(0,15,20,23,25,27,30,32,35,37,40), labels = c(0,15,20,23,25,27,30,32,35,37,40)),show_row_dend = FALSE, show_column_dend = FALSE, col = colorRamp2(c(0,15,20,23,25,27,30,32,35,37,40), c("grey85","lightblue1", "darkslategray1", "cyan","deepskyblue", "dodgerblue",  "blue", "mediumblue", "navy", "midnightblue","black")),clustering_distance_rows = dist_na, cluster_columns = FALSE)
+```
+
+Differential Expression analysis
+```{r}
+design2 <- model.matrix(~0+Tissue,sample_data)
+colnames(design2) <- gsub("Tissue", "", colnames(design2))
+design2
+```
+
+```{r individual comparisons for logFC}
+#difference between slime and other tissue
+contr.matrix_slime <-makeContrasts(
+    SlimevsAv = SLIME-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    VMSvsAv= VMS-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    VMGvsAv= VMG-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    DMMvsAv= DMM-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    DMSvsAv = DMS-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    VMMvsAv = VMM-(VMS+VMG+SLIME+DMS+DMM+VMM)/6,
+    levels = design2
+  )
+
+fit <- lmFit(expr_data, design2)
+cfit <- contrasts.fit(fit, contrasts = contr.matrix_slime)
+efit<-eBayes(cfit)
+
+#graph of slime vs skin and gland P<0.05
+slimeskin <- topTable(efit, coef=c("SlimevsAv","VMGvsAv","VMSvsAv","DMSvsAv","VMMvsAv","DMMvsAv"), genelist = info_data, n=Inf)
+row.names(slimeskin) <- slimeskin$Majority.protein.IDs
+slimesub <- subset(slimeskin, slimeskin$adj.P.Val<0.05)
+slimesub <- slimesub[c(1:7)]
+
+anno_merge <- merge(anno_data,slimesub, by = "Majority.protein.IDs")
+slimesub$Majority.protein.IDs <- rownames(slimesub)
+
+logsonly <- slimesub[c(2:7)]
+Heatmap(logsonly, col = circlize::colorRamp2(c(-10,0,5), c("Darkblue", "white", "red")), column_title = "Tissues Vs Average Expression P<0.05", show_row_names = FALSE, show_row_dend = FALSE,heatmap_legend_param = list(title = "logFC", color_bar = "continuous"))
+```
+
+Filtered data
+```{r}
+#filtering for negatively DE muscle tissues and positively DE slime and gland
+slimesubfilter3 <- subset(anno_merge, anno_merge$SlimevsAv > 0 & anno_merge$VMMvsAv < 0 & anno_merge$DMMvsAv < 0)
+slimesubfilter3 <- as.data.table(slimesubfilter3)
+
+#subsetofFC>1
+slimesubfilter4 <- subset(slimesubfilter3, slimesubfilter3$SlimevsAv > 1)
+anno_merge_filter4 <- merge(anno_data,slimesubfilter4, by = "Majority.protein.IDs")
+```
+
+Final Heatmap of upregulated proteins in the slime and downregulated in the muscle tissue.
+```{r}
+slimesubfilterdata <- data.table(slimesubfilter4$SlimevsAv,slimesubfilter4$VMSvsAv,slimesubfilter4$VMGvsAv,slimesubfilter4$DMMvsAv, slimesubfilter4$DMSvsAv, slimesubfilter4$VMMvsAv)
+names(slimesubfilterdata)[1] <- "Slime"
+names(slimesubfilterdata)[2] <- "Ventral Epithelium"
+names(slimesubfilterdata)[3] <- "Ventral Gland"
+names(slimesubfilterdata)[4] <- "Dorsal Muscle"
+names(slimesubfilterdata)[5] <- "Dorsal Epithelium"
+names(slimesubfilterdata)[6] <- "Ventral Muscle"
+
+slimesubid <- slimesubfilter4$Majority.protein.IDs
+slimesubid <- as.data.frame(sapply(slimesubid,gsub,pattern = '(^[^::]*::)', replacement = ""))
+slimesubid <- as.data.frame(sapply(slimesubid,gsub,pattern = ';.*', replacement = ""))
+slimesubid <- as.data.frame(sapply(slimesubid,gsub,pattern = 'TRINITY_', replacement = ""))
+slimesubid <- as.data.frame(sapply(slimesubid,gsub,pattern = '_i.*', replacement = ""))
+names(slimesubid)[1] <- "ID" 
+
+HM <- Heatmap(slimesubfilterdata, show_row_names = TRUE, name = "Log2FC", col = circlize::colorRamp2(c(-3, 0, 5), c( "lightseagreen", "white","violetred")), heatmap_legend_param = list(color_bar = "continuous", legend_direction="horizontal", legend_width = unit(7,"cm")), show_row_dend = FALSE) + rowAnnotation(id = row_anno_text(slimesubid$ID, just = "left", offset = unit(0.1,"cm")), width = unit(6,"cm"))
+HM <- draw(HM, heatmap_legend_side = "top")
+
+```
+
+Subsetting presence/absence for proteins that appear in the slime and glands but not the mantle muscle. 
+```{r}
+SG_prots <- as.data.frame(pa_filtered_data)
+SG_prots$Majority.protein.IDs <- rownames(SG_prots)
+mantlepos <- c(1:4,17:20)
+slimepos <- c(9:12)
+glandpos <- c(13:16)
+SG_prots <- SG_prots %>% filter(rowSums(select_(.,'mantlepos')) == 0) %>% filter(rowSums(select_(.,'slimepos')) >=2) %>% filter(rowSums(select_(.,'glandpos')) >= 2) 
+SG_prots <- merge(anno_data,SG_prots, by = "Majority.protein.IDs")
+```
+
+GO term analysis
+```{r}
+library(topGO)
+library("Rgraphviz")
+
+geneID2GO <- readMappings(file = "input_data/goblastprots.map")
+geneNames <- names(geneID2GO)
+
+slimesubfilter4$Majority.protein.IDs <- as.data.frame(sapply(slimesubfilter4$Majority.protein.IDs,gsub,pattern = '(^[^::]*::)', replacement = ""))
+slimesubfilter4$Majority.protein.IDs <- as.data.frame(sapply(slimesubfilter4$Majority.protein.IDs,gsub,pattern = ';.*', replacement = ""))
+
+#list of DE genes you want to look at
+myInterestingGenes <- as.matrix(slimesubfilter4$Majority.protein.IDs)
+
+geneList <- factor(as.integer(geneNames %in% myInterestingGenes))
+names(geneList) <- geneNames
+str(geneList)
+
+GOdata <- new("topGOdata", ontology = "MF", allGenes = geneList,annot = annFUN.gene2GO, gene2GO = geneID2GO)
+
+resultFis <- runTest(GOdata, algorithm = "classic", statistic = "fisher")
+allRes <- GenTable(GOdata, classic = resultFis,orderBy = "weight", ranksOf = "classic", topNodes = 15)
+
+
+mysummary <- summary(attributes(resultFis)$score <= 0.005)
+numsignif <- as.integer(mysummary[[3]])
+
+showSigOfNodes(GOdata, score(resultFis), firstSigNodes = numsignif, useInfo = 'def', .NO.CHAR = 35)
+
+
+AnnotatedGenes = lapply(allRes$GO.ID, function(x) as.character(unlist(genesInTerm(object = GOdata, whichGO = x)))) 
+# list containg genes annotated to significant GO terms
+SignificantGenes = lapply(AnnotatedGenes, function(x) intersect(x, myInterestingGenes))
+
+```
+
+
