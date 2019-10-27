@@ -18,13 +18,13 @@ Before running the scripts in this repository you will need to download the raw 
 First clone this git repository
 
 ```{bash}
-git clone https://github.com/marine-omics/slineolata_LFQ_2019.git
+git clone https://github.com/marine-omics/slineolata_quantification.git
 ```
 
 Change directory so you are in the top level repository directory
 
 ```{bash}
-cd slineolata_LFQ_2019
+cd slineolata_quantification
 ```
 
 Download the raw data and unpack it
